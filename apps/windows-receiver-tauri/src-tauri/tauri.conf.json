@@ -34,7 +34,7 @@
       "active": true,
       "targets": ["msi"],
       "identifier": "com.easytransfer.receiver",
-      "icon": []
+      "icon": ["icons/icon.ico"]
     },
     "windows": [
       {
