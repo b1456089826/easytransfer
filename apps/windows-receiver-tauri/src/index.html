@@ -16,11 +16,15 @@
   <body>
     <h2>易传 Windows 接收端（Tauri）</h2>
     <div class="row">
-      <label>Android 服务地址（示例：192.168.1.10:18777）</label>
-      <input id="androidAddr" placeholder="192.168.1.10:18777" />
+      <label>监听地址（示例：0.0.0.0:18778）</label>
+      <input id="listenAddr" placeholder="0.0.0.0:18778" value="0.0.0.0:18778" />
     </div>
     <div class="row">
-      <label>manifest.json 路径</label>
+      <label>接收文件保存路径（JSONL）</label>
+      <input id="receivedPath" placeholder="C:\\...\\received.jsonl" />
+    </div>
+    <div class="row">
+      <label>manifest.json 路径（重组时使用）</label>
       <input id="manifestPath" placeholder="C:\\...\\manifest.json" />
     </div>
     <div class="row">
@@ -28,11 +32,12 @@
       <input id="outputDir" placeholder="C:\\...\\output" />
     </div>
     <div class="row">
-      <label>待发送文件（由 Windows 上传给 Android）</label>
-      <input id="uploadFilePath" placeholder="C:\\...\\to-send.bin" />
+      <label>接收状态</label>
+      <input id="statusText" placeholder="未启动" readonly />
     </div>
     <div class="row">
-      <button id="sendBtn">发送到 Android</button>
+      <button id="startBtn">启动接收服务</button>
+      <button id="stopBtn">停止接收服务</button>
       <button id="runBtn">执行重组</button>
     </div>
     <pre id="log"></pre>

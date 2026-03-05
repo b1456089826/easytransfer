@@ -9,8 +9,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -26,7 +29,7 @@ struct Manifest {
     files: Vec<ManifestFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ReceivedRec {
     symbol_id: String,
     data_b64: String,
@@ -48,11 +51,25 @@ struct Report {
 }
 
 #[derive(Debug, Serialize)]
-struct UploadReport {
+struct ServerReport {
     ok: bool,
-    status_line: String,
-    bytes_sent: usize,
-    response_body: String,
+    listen_addr: String,
+    received_path: String,
+    message: String,
+}
+
+struct ReceiverServerState {
+    running: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Default for ReceiverServerState {
+    fn default() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            worker: None,
+        }
+    }
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -101,44 +118,81 @@ fn decompress(codec: &str, data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn upload_to_android(android_addr: String, file_path: String) -> Result<UploadReport, String> {
-    let addr = if android_addr.contains(':') {
-        android_addr
-    } else {
-        format!("{}:18777", android_addr)
-    };
+fn start_receiver_server(
+    listen_addr: String,
+    received_path: String,
+    state: tauri::State<'_, Mutex<ReceiverServerState>>,
+) -> Result<ServerReport, String> {
+    let mut guard = state.lock().map_err(|_| "状态锁失败".to_string())?;
+    if guard.running.load(Ordering::SeqCst) {
+        return Ok(ServerReport {
+            ok: true,
+            listen_addr,
+            received_path,
+            message: "接收服务已在运行".to_string(),
+        });
+    }
 
-    let payload = fs::read(&file_path).map_err(|e| format!("读取文件失败: {}", e))?;
-    let mut stream = TcpStream::connect(&addr).map_err(|e| format!("连接 Android 失败: {}", e))?;
+    let listener = TcpListener::bind(&listen_addr).map_err(|e| format!("监听失败: {}", e))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("设置非阻塞失败: {}", e))?;
 
-    let request_head = format!(
-        "POST /upload HTTP/1.1\r\nHost: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        addr,
-        payload.len()
-    );
-    stream
-        .write_all(request_head.as_bytes())
-        .map_err(|e| format!("发送请求头失败: {}", e))?;
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("发送请求体失败: {}", e))?;
-    stream.flush().map_err(|e| format!("刷新发送失败: {}", e))?;
+    let path = PathBuf::from(received_path.clone());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
 
-    let mut resp = String::new();
-    stream
-        .read_to_string(&mut resp)
-        .map_err(|e| format!("读取响应失败: {}", e))?;
+    let running = guard.running.clone();
+    running.store(true, Ordering::SeqCst);
 
-    let mut lines = resp.lines();
-    let status_line = lines.next().unwrap_or("HTTP/1.1 000 UNKNOWN").to_string();
-    let body = resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    let ok = status_line.contains(" 200 ");
+    let worker = thread::spawn(move || {
+        while running.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = handle_windows_client(&mut stream, &path);
+                }
+                Err(err) => {
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        std::thread::sleep(std::time::Duration::from_millis(120));
+                    }
+                }
+            }
+        }
+    });
 
-    Ok(UploadReport {
-        ok,
-        status_line,
-        bytes_sent: payload.len(),
-        response_body: body,
+    guard.worker = Some(worker);
+
+    Ok(ServerReport {
+        ok: true,
+        listen_addr,
+        received_path,
+        message: "接收服务已启动".to_string(),
+    })
+}
+
+#[tauri::command]
+fn stop_receiver_server(
+    state: tauri::State<'_, Mutex<ReceiverServerState>>,
+) -> Result<ServerReport, String> {
+    let mut guard = state.lock().map_err(|_| "状态锁失败".to_string())?;
+    if !guard.running.load(Ordering::SeqCst) {
+        return Ok(ServerReport {
+            ok: true,
+            listen_addr: "".to_string(),
+            received_path: "".to_string(),
+            message: "接收服务未运行".to_string(),
+        });
+    }
+    guard.running.store(false, Ordering::SeqCst);
+    if let Some(worker) = guard.worker.take() {
+        let _ = worker.join();
+    }
+    Ok(ServerReport {
+        ok: true,
+        listen_addr: "".to_string(),
+        received_path: "".to_string(),
+        message: "接收服务已停止".to_string(),
     })
 }
 
@@ -251,9 +305,65 @@ fn load_symbol_map(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
     Ok(symbol_map)
 }
 
+fn handle_windows_client(stream: &mut TcpStream, received_path: &Path) -> Result<(), String> {
+    let mut req = Vec::new();
+    stream
+        .read_to_end(&mut req)
+        .map_err(|e| format!("读取请求失败: {}", e))?;
+    let req_text = String::from_utf8_lossy(&req).to_string();
+    if !req_text.starts_with("POST /upload-symbol") {
+        write_http(stream, 404, "Not Found", "{\"ok\":false,\"error\":\"path\"}")?;
+        return Ok(());
+    }
+    let parts: Vec<&str> = req_text.split("\r\n\r\n").collect();
+    if parts.len() < 2 {
+        write_http(stream, 400, "Bad Request", "{\"ok\":false,\"error\":\"body\"}")?;
+        return Ok(());
+    }
+    let body = parts[1];
+    let rec: ReceivedRec = serde_json::from_str(body).map_err(|e| format!("解析JSON失败: {}", e))?;
+    let _ = B64.decode(rec.data_b64.clone()).map_err(|e| format!("base64失败: {}", e))?;
+    let line = serde_json::to_string(&rec).map_err(|e| format!("序列化失败: {}", e))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(received_path)
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("写入失败: {}", e))?;
+    file.write_all(b"\n").map_err(|e| format!("换行失败: {}", e))?;
+
+    write_http(stream, 200, "OK", "{\"ok\":true,\"received\":true}")?;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+fn write_http(stream: &mut TcpStream, code: u16, reason: &str, body: &str) -> Result<(), String> {
+    let bytes = body.as_bytes();
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        code,
+        reason,
+        bytes.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| format!("响应头失败: {}", e))?;
+    stream
+        .write_all(bytes)
+        .map_err(|e| format!("响应体失败: {}", e))?;
+    stream.flush().map_err(|e| format!("刷新失败: {}", e))?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![reconstruct, upload_to_android])
+        .manage(Mutex::new(ReceiverServerState::default()))
+        .invoke_handler(tauri::generate_handler![
+            reconstruct,
+            start_receiver_server,
+            stop_receiver_server
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

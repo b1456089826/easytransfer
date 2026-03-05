@@ -9,44 +9,50 @@
         android:id="@+id/titleText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="易传安卓端（服务模式）"
+        android:text="易传安卓端（扫码上传）"
         android:textSize="20sp"
         android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/addressHint"
+    <EditText
+        android:id="@+id/windowsAddrInput"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="服务地址：未启动"
-        android:textSize="14sp" />
+        android:hint="Windows地址，例如 192.168.1.20:18778"
+        android:inputType="text" />
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="260dp"
+        android:layout_marginTop="8dp" />
 
     <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="等待启动服务..." />
+        android:text="等待扫码..." />
 
     <Button
-        android:id="@+id/startServiceButton"
+        android:id="@+id/startScanButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="启动接收服务" />
+        android:text="开始扫码并上传" />
 
     <Button
-        android:id="@+id/stopServiceButton"
+        android:id="@+id/stopScanButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="停止接收服务" />
+        android:text="停止扫码" />
 
     <Button
         android:id="@+id/exportButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="导出接收结果" />
+        android:text="导出上传日志" />
 
 </LinearLayout>
