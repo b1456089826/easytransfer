@@ -12,6 +12,18 @@ function setStatus(text) {
   statusInput.value = text;
 }
 
+function getInvoke() {
+  const tauriGlobal = window.__TAURI__;
+  if (!tauriGlobal) {
+    throw new Error('未检测到 Tauri 运行时，请使用 Tauri 打包后的应用启动。');
+  }
+  const invoke = tauriGlobal?.tauri?.invoke || tauriGlobal?.core?.invoke || tauriGlobal?.invoke;
+  if (typeof invoke !== 'function') {
+    throw new Error('Tauri invoke API 不可用，请确认应用版本与配置。');
+  }
+  return invoke;
+}
+
 startBtn.addEventListener('click', async () => {
   const listenAddr = document.getElementById('listenAddr').value.trim();
   const receivedPath = document.getElementById('receivedPath').value.trim();
@@ -20,7 +32,7 @@ startBtn.addEventListener('click', async () => {
     return;
   }
   try {
-    const { invoke } = window.__TAURI__.tauri;
+    const invoke = getInvoke();
     const res = await invoke('start_receiver_server', { listenAddr, receivedPath });
     setStatus(`运行中：${listenAddr}`);
     log(JSON.stringify(res, null, 2));
@@ -32,7 +44,7 @@ startBtn.addEventListener('click', async () => {
 
 stopBtn.addEventListener('click', async () => {
   try {
-    const { invoke } = window.__TAURI__.tauri;
+    const invoke = getInvoke();
     const res = await invoke('stop_receiver_server');
     setStatus('已停止');
     log(JSON.stringify(res, null, 2));
@@ -52,7 +64,7 @@ runBtn.addEventListener('click', async () => {
   }
 
   try {
-    const { invoke } = window.__TAURI__.tauri;
+    const invoke = getInvoke();
     const res = await invoke('reconstruct', { receivedPath, manifestPath, outputDir });
     log(JSON.stringify(res, null, 2));
   } catch (e) {
