@@ -36,7 +36,7 @@ jobs:
 
       - name: Build debug APK
         working-directory: apps/android-scanner
-        run: ./gradlew assembleDebug
+        run: ./gradlew :app:assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
