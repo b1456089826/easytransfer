@@ -22,7 +22,7 @@ let timer = null;
 let frameIndex = 0;
 let currentTransferId = '';
 let symbolIndex = new Map();
-let manifestObject = null;
+let controlObject = null;
 let manifestFrames = [];
 let dataFrames = [];
 
@@ -119,54 +119,19 @@ function randomTransferId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function buildManifestFrames(manifest, transferId, frameSeqStart, chunkSize = 900) {
-  const text = JSON.stringify(manifest);
-  const bytes = new TextEncoder().encode(text);
-  const chunks = iterChunks(bytes, chunkSize);
-  const frames = [];
-  let frameSeq = frameSeqStart;
-
-  frames.push(encodeFrameText({
+function buildControlFrame(control, transferId, frameSeqStart) {
+  const frame = encodeFrameText({
     v: 1,
-    kind: 'manifest_start',
+    kind: 'control',
     transfer_id: transferId,
-    frame_seq: frameSeq,
-    chunk_total: chunks.length,
-    manifest_sha256: manifest.manifest_sha256,
-    payload_name: manifest.payload_name,
-    payload_size: manifest.payload_size,
-    payload_symbol_count: manifest.payload_symbol_count,
+    frame_seq: frameSeqStart,
+    payload_name: control.payload_name,
+    payload_size: control.payload_size,
+    payload_symbol_count: control.payload_symbol_count,
+    protocol: control.protocol,
     ts: Date.now(),
-  }));
-  frameSeq += 1;
-
-  for (let i = 0; i < chunks.length; i += 1) {
-    frames.push(encodeFrameText({
-      v: 1,
-      kind: 'manifest_chunk',
-      transfer_id: transferId,
-      frame_seq: frameSeq,
-      chunk_index: i,
-      chunk_total: chunks.length,
-      payload_b64: btoa(String.fromCharCode(...chunks[i])),
-      payload_crc32: crc32(chunks[i]),
-      ts: Date.now(),
-    }));
-    frameSeq += 1;
-  }
-
-  frames.push(encodeFrameText({
-    v: 1,
-    kind: 'manifest_end',
-    transfer_id: transferId,
-    frame_seq: frameSeq,
-    chunk_total: chunks.length,
-    manifest_sha256: manifest.manifest_sha256,
-    ts: Date.now(),
-  }));
-  frameSeq += 1;
-
-  return { frames, nextSeq: frameSeq };
+  });
+  return { frames: [frame], nextSeq: frameSeqStart + 1 };
 }
 
 async function prepareFrames() {
@@ -239,6 +204,10 @@ async function prepareFrames() {
           payload_b64: btoa(String.fromCharCode(...payload)),
           payload_sha256: await sha256Hex(payload.buffer),
           payload_crc32: crc32(payload),
+          payload_file_name: file.name,
+          payload_file_size: file.size,
+          payload_file_sha256: fileHash,
+          payload_compression: compressed.codec,
           ts: Date.now(),
         };
         const text = encodeFrameText(rec);
@@ -274,6 +243,10 @@ async function prepareFrames() {
           payload_b64: btoa(String.fromCharCode(...parity)),
           payload_sha256: await sha256Hex(parity.buffer),
           payload_crc32: crc32(parity),
+          payload_file_name: file.name,
+          payload_file_size: file.size,
+          payload_file_sha256: fileHash,
+          payload_compression: compressed.codec,
           ts: Date.now(),
         };
         const text = encodeFrameText(rec);
@@ -293,24 +266,16 @@ async function prepareFrames() {
     });
   }
 
-  const manifestBase = {
-    version: 1,
+  const controlBase = {
     protocol: 'easytransfer/1',
     transfer_id: currentTransferId,
-    created_ts: Date.now(),
     payload_name: manifestFiles.length === 1 ? manifestFiles[0].path : 'bundle.bin',
     payload_size: manifestFiles.reduce((acc, item) => acc + (item.size || 0), 0),
     payload_symbol_count: totalSymbols,
-    files: manifestFiles,
-    totals: {
-      file_count: manifestFiles.length,
-      symbol_count: totalSymbols,
-    },
   };
-  const manifestSha = await sha256Hex(new TextEncoder().encode(JSON.stringify(manifestBase)).buffer);
-  manifestObject = { ...manifestBase, manifest_sha256: manifestSha };
+  controlObject = { ...controlBase };
 
-  const mf = buildManifestFrames(manifestObject, currentTransferId, 0);
+  const mf = buildControlFrame(controlObject, currentTransferId, 0);
   manifestFrames = [...mf.frames];
   dataFrames = [...allFrames.map((txt, idx) => {
     try {
@@ -327,7 +292,7 @@ async function prepareFrames() {
   startDataBtn.disabled = false;
   repairBtn.disabled = false;
   stats.textContent = `传输ID: ${currentTransferId} | 分片总数: ${totalSymbols} | 总帧数: ${allFrames.length}`;
-  log(`已生成完成，manifest控制帧=${mf.frames.length}，传输ID=${currentTransferId}`);
+  log(`已生成完成，控制帧=${mf.frames.length}，传输ID=${currentTransferId}`);
 
   const indexBlob = new Blob([JSON.stringify({ transfer_id: currentTransferId, symbol_ids: indexRows }, null, 2)], { type: 'application/json' });
   exportMissingBtn.onclick = () => {

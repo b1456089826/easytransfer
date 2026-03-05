@@ -4,7 +4,6 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const runBtn = document.getElementById('runBtn');
 const pickReceivedBtn = document.getElementById('pickReceivedBtn');
-const pickManifestBtn = document.getElementById('pickManifestBtn');
 const pickOutputBtn = document.getElementById('pickOutputBtn');
 
 function log(msg) {
@@ -36,15 +35,6 @@ pickReceivedBtn.addEventListener('click', async () => {
   try {
     const path = await call('pick_file', { filterExt: 'jsonl' });
     if (path) document.getElementById('receivedPath').value = path;
-  } catch (e) {
-    log(`选择文件失败：${e}`);
-  }
-});
-
-pickManifestBtn.addEventListener('click', async () => {
-  try {
-    const path = await call('pick_file', { filterExt: 'json' });
-    if (path) document.getElementById('manifestPath').value = path;
   } catch (e) {
     log(`选择文件失败：${e}`);
   }
@@ -88,14 +78,13 @@ stopBtn.addEventListener('click', async () => {
 
 runBtn.addEventListener('click', async () => {
   const receivedPath = document.getElementById('receivedPath').value.trim();
-  const manifestPath = document.getElementById('manifestPath').value.trim();
   const outputDir = document.getElementById('outputDir').value.trim();
   if (!receivedPath || !outputDir) {
     log('请填写接收文件路径与输出目录');
     return;
   }
   try {
-    const res = await call('reconstruct', { receivedPath, manifestPath, outputDir });
+    const res = await call('reconstruct', { receivedPath, manifestPath: '', outputDir });
     log(JSON.stringify(res, null, 2));
   } catch (e) {
     log(`重组失败：${e}`);

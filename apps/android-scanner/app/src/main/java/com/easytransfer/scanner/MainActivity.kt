@@ -136,6 +136,11 @@ class MainActivity : ComponentActivity() {
             val obj = JSONObject(payload)
             val kind = obj.optString("kind")
 
+            if (kind == "control") {
+                processControlFrame(obj)
+                return
+            }
+
             if (kind.startsWith("manifest_")) {
                 processManifestFrame(obj)
                 return
@@ -168,6 +173,19 @@ class MainActivity : ComponentActivity() {
                 statusText.text = "阶段：扫码采集中，已收 ${symbolMap.size} 分片"
             }
         } catch (_: Exception) {
+        }
+    }
+
+    private fun processControlFrame(obj: JSONObject) {
+        transferId = obj.optString("transfer_id")
+        controlFileName = obj.optString("payload_name")
+        controlFileSize = obj.optLong("payload_size", 0L)
+        controlSymbolCount = obj.optInt("payload_symbol_count", 0)
+        controlMetaReady = controlFileName.isNotBlank() && controlFileSize > 0 && controlSymbolCount > 0
+        runOnUiThread {
+            statusText.text = "阶段：控制帧已接收，可开始数据扫码"
+            controlInfoText.text = "控制帧信息：${controlFileName} | ${controlFileSize} 字节 | ${controlSymbolCount} 分片"
+            finalizeButton.isEnabled = controlMetaReady
         }
     }
 
@@ -242,7 +260,7 @@ class MainActivity : ComponentActivity() {
 
     private fun finalizeAndUpload() {
         stopScan()
-        if (!controlMetaReady || manifestText.isNullOrBlank()) {
+        if (!controlMetaReady) {
             statusText.text = "控制帧未完成，请先扫控制帧"
             return
         }
