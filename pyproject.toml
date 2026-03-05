@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easytransfer"
+version = "0.1.0"
+description = "Offline high-speed frame-based file transfer MVP"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "EasyTransfer Team" }
+]
+dependencies = []
+
+[project.scripts]
+easytransfer-sender = "easytransfer.sender_cli:main"
+easytransfer-scanner = "easytransfer.scanner_cli:main"
+easytransfer-receiver = "easytransfer.receiver_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

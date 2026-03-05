@@ -1,0 +1,43 @@
+name: windows-tauri-build
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri dependencies
+        shell: pwsh
+        run: |
+          choco install -y wixtoolset
+
+      - name: Install npm deps
+        working-directory: apps/windows-receiver-tauri
+        run: npm install
+
+      - name: Build Tauri app (Windows)
+        working-directory: apps/windows-receiver-tauri
+        run: npm run tauri:build
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytransfer-windows-tauri-bundle
+          path: apps/windows-receiver-tauri/src-tauri/target/release/bundle/

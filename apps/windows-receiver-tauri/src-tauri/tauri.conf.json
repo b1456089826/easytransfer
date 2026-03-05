@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "../src",
+    "distDir": "../src"
+  },
+  "package": {
+    "productName": "EasyTransferReceiver",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": true,
+        "open": true,
+        "save": true
+      },
+      "fs": {
+        "all": true,
+        "readFile": true,
+        "writeFile": true,
+        "createDir": true,
+        "readDir": true
+      },
+      "shell": {
+        "all": false,
+        "open": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": ["msi"],
+      "identifier": "com.easytransfer.receiver",
+      "icon": []
+    },
+    "windows": [
+      {
+        "title": "EasyTransfer Receiver",
+        "width": 960,
+        "height": 720,
+        "resizable": true
+      }
+    ]
+  }
+}

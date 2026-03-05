@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+out/
+tmp/
+node_modules/
+apps/windows-receiver-tauri/src-tauri/target/
+apps/windows-receiver-tauri/dist/

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EasyTransfer Sender</title>
+    <style>
+      body { font-family: Arial, sans-serif; width: 360px; padding: 12px; }
+      .row { margin-bottom: 10px; }
+      label { display: block; font-size: 12px; margin-bottom: 4px; }
+      input, button, select { width: 100%; box-sizing: border-box; padding: 6px; }
+      #frameCanvas { width: 100%; border: 1px solid #ddd; }
+      pre { max-height: 180px; overflow: auto; background: #111; color: #0f0; padding: 8px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <h3>EasyTransfer Sender</h3>
+    <div class="row">
+      <label for="fileInput">Select files</label>
+      <input id="fileInput" type="file" multiple />
+    </div>
+    <div class="row">
+      <label for="fpsInput">FPS</label>
+      <input id="fpsInput" type="number" min="1" max="60" value="30" />
+    </div>
+    <div class="row">
+      <label for="symbolInput">Symbol size (bytes)</label>
+      <input id="symbolInput" type="number" min="128" max="4096" value="1024" />
+    </div>
+    <div class="row">
+      <label for="redundancyInput">Redundancy ratio</label>
+      <input id="redundancyInput" type="number" min="0" max="2" step="0.05" value="0.2" />
+    </div>
+    <div class="row">
+      <button id="prepareBtn">Prepare Frames</button>
+    </div>
+    <div class="row">
+      <button id="startBtn" disabled>Start Playback</button>
+    </div>
+    <div class="row">
+      <button id="stopBtn" disabled>Stop</button>
+    </div>
+    <canvas id="frameCanvas" width="320" height="320"></canvas>
+    <pre id="log"></pre>
+    <script src="popup.js"></script>
+  </body>
+  </html>

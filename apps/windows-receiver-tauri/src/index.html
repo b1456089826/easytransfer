@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EasyTransfer Receiver</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; }
+      .row { margin-bottom: 10px; }
+      label { display:block; font-size: 12px; margin-bottom: 4px; }
+      input { width: 100%; padding: 6px; box-sizing: border-box; }
+      button { padding: 8px 12px; margin-right: 8px; }
+      pre { background:#111; color:#0f0; padding:10px; max-height:320px; overflow:auto; }
+    </style>
+  </head>
+  <body>
+    <h2>EasyTransfer Windows Receiver (Tauri)</h2>
+    <div class="row">
+      <label>received.jsonl</label>
+      <input id="receivedPath" placeholder="C:\\...\\received.jsonl" />
+    </div>
+    <div class="row">
+      <label>manifest.json</label>
+      <input id="manifestPath" placeholder="C:\\...\\manifest.json" />
+    </div>
+    <div class="row">
+      <label>output folder</label>
+      <input id="outputDir" placeholder="C:\\...\\output" />
+    </div>
+    <div class="row">
+      <button id="runBtn">Reconstruct</button>
+    </div>
+    <pre id="log"></pre>
+    <script type="module" src="./main.js"></script>
+  </body>
+  </html>
