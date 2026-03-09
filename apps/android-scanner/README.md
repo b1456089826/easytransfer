@@ -9,9 +9,10 @@ cd apps/android-scanner
 
 ## Function
 
-- CameraX preview + frame analysis
-- ZXing decode for frame payload JSON
-- Deduplicate symbols by `symbol_id`
-- Export `received.jsonl` and `feedback.json` for receiver side
+- CameraX continuous scanning + frame decoding
+- Parse single control frame metadata and show progress
+- Deduplicate symbols by `symbol_id` and detect conflicts
+- Validate missing shards, upload `manifest` + symbols to Windows
+- Persist Windows address and uploaded symbol resume state
 
-Export directory is app external files under `session/`.
+Export directory is app external files under `scan-validate-upload/`.

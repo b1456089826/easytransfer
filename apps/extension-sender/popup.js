@@ -120,6 +120,17 @@ function randomTransferId() {
 }
 
 function buildControlFrame(control, transferId, frameSeqStart) {
+  const controlData = JSON.stringify({
+    transfer_id: transferId,
+    payload_name: control.payload_name,
+    payload_size: control.payload_size,
+    payload_symbol_count: control.payload_symbol_count,
+    protocol: control.protocol,
+  });
+  const controlBytes = new TextEncoder().encode(controlData);
+  if (controlBytes.length > 1200) {
+    throw new Error(`控制帧过大（${controlBytes.length}字节），请减少文件数量或缩短文件名`);
+  }
   const frame = encodeFrameText({
     v: 1,
     kind: 'control',
@@ -128,6 +139,8 @@ function buildControlFrame(control, transferId, frameSeqStart) {
     payload_name: control.payload_name,
     payload_size: control.payload_size,
     payload_symbol_count: control.payload_symbol_count,
+    payload_data_b64: btoa(String.fromCharCode(...controlBytes)),
+    payload_data_crc32: crc32(controlBytes),
     protocol: control.protocol,
     ts: Date.now(),
   });
@@ -197,10 +210,10 @@ async function prepareFrames() {
           file_id: fileId,
           block_id: blockId,
           block_total: blocks.length,
-          symbol_id: symbolId,
-          symbol_total: symbolTotal,
+          symbol_index: symbolId,
+          source_symbol_total: symbolTotal,
           is_repair: false,
-          stable_symbol_id: sid,
+          symbol_id: sid,
           payload_b64: btoa(String.fromCharCode(...payload)),
           payload_sha256: await sha256Hex(payload.buffer),
           payload_crc32: crc32(payload),
@@ -235,10 +248,10 @@ async function prepareFrames() {
           file_id: fileId,
           block_id: blockId,
           block_total: blocks.length,
-          symbol_id: symbolTotal + r,
-          symbol_total: symbolTotal + repairCount,
+          symbol_index: symbolTotal + r,
+          source_symbol_total: symbolTotal,
           is_repair: true,
-          stable_symbol_id: sid,
+          symbol_id: sid,
           repair_of: uniq.map((x) => makeSymbolId(currentTransferId, fileId, blockId, x)),
           payload_b64: btoa(String.fromCharCode(...parity)),
           payload_sha256: await sha256Hex(parity.buffer),

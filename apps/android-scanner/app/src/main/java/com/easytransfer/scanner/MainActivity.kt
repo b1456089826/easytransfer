@@ -1,9 +1,9 @@
 package com.easytransfer.scanner
 
 import android.Manifest
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.content.SharedPreferences
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -53,10 +53,8 @@ class MainActivity : ComponentActivity() {
     private val allSeenByBlock = linkedMapOf<String, MutableSet<Int>>()
     private val missingSymbolIds = linkedSetOf<String>()
     private var uploadedCount = 0
-    private var manifestText: String? = null
-    private val manifestChunks = linkedMapOf<Int, ByteArray>()
-    private var manifestChunkTotal = 0
-    private var manifestSha256: String? = null
+    private val uploadedSymbolIds = linkedSetOf<String>()
+    private val uploadConflictIds = linkedSetOf<String>()
     private var controlMetaReady = false
     private var controlFileName: String = ""
     private var controlFileSize: Long = 0L
@@ -130,6 +128,7 @@ class MainActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    @Synchronized
     private fun onPayloadDecoded(payload: String) {
         if (!isScanning) return
         try {
@@ -141,31 +140,36 @@ class MainActivity : ComponentActivity() {
                 return
             }
 
-            if (kind.startsWith("manifest_")) {
-                processManifestFrame(obj)
-                return
-            }
-
             if (kind != "symbol") return
             runOnUiThread {
-                frameInfoText.text = "当前帧：#${obj.optInt("frame_seq", -1)} 文件${obj.optInt("file_id", -1)} 块${obj.optInt("block_id", -1)} 分片${obj.optInt("symbol_id", -1)}"
+                frameInfoText.text = "当前帧：#${obj.optInt("frame_seq", -1)} 文件${obj.optInt("file_id", -1)} 块${obj.optInt("block_id", -1)} 分片${obj.optInt("symbol_index", -1)}"
             }
 
-            val sid = obj.optString("stable_symbol_id")
+            val sid = obj.optString("symbol_id")
             if (sid.isBlank()) return
 
             val tid = obj.optString("transfer_id")
             if (transferId == null && tid.isNotBlank()) transferId = tid
-            if (transferId != null && tid.isNotBlank() && tid != transferId) return
+            if (transferId != null && tid.isNotBlank() && tid != transferId) {
+                runOnUiThread { statusText.text = "错误：扫描到不同传输ID，请重新开始" }
+                return
+            }
 
-            if (symbolMap.containsKey(sid)) return
+            if (symbolMap.containsKey(sid)) {
+                val oldPayload = symbolMap[sid]?.optString("payload_b64")
+                val newPayload = obj.optString("payload_b64")
+                if (!oldPayload.isNullOrBlank() && oldPayload != newPayload) {
+                    uploadConflictIds.add(sid)
+                }
+                return
+            }
             symbolMap[sid] = obj
 
             val blockKey = "f${obj.optInt("file_id", -1)}:b${obj.optInt("block_id", -1)}"
-            val symbolId = obj.optInt("symbol_id", -1)
-            val expected = obj.optInt("symbol_total", -1)
+            val symbolId = obj.optInt("symbol_index", -1)
+            val expected = obj.optInt("source_symbol_total", -1)
             if (expected > 0) expectedByBlock[blockKey] = maxOf(expectedByBlock[blockKey] ?: 0, expected)
-            if (symbolId >= 0) {
+            if (symbolId >= 0 && obj.optBoolean("is_repair", false).not()) {
                 allSeenByBlock.getOrPut(blockKey) { linkedSetOf() }.add(symbolId)
             }
 
@@ -178,69 +182,37 @@ class MainActivity : ComponentActivity() {
 
     private fun processControlFrame(obj: JSONObject) {
         transferId = obj.optString("transfer_id")
-        controlFileName = obj.optString("payload_name")
-        controlFileSize = obj.optLong("payload_size", 0L)
-        controlSymbolCount = obj.optInt("payload_symbol_count", 0)
+        val existingUploaded = prefs.getStringSet("uploaded_${transferId}", emptySet()) ?: emptySet()
+        uploadedSymbolIds.clear()
+        uploadedSymbolIds.addAll(existingUploaded)
+        val b64 = obj.optString("payload_data_b64")
+        val crc = obj.optInt("payload_data_crc32", -1)
+        if (b64.isNotBlank()) {
+            try {
+                val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                if (crc >= 0 && crc32(bytes) != crc) {
+                    runOnUiThread { statusText.text = "控制帧校验失败" }
+                    return
+                }
+                val dataObj = JSONObject(String(bytes, Charsets.UTF_8))
+                controlFileName = dataObj.optString("payload_name")
+                controlFileSize = dataObj.optLong("payload_size", 0L)
+                controlSymbolCount = dataObj.optInt("payload_symbol_count", 0)
+            } catch (_: Exception) {
+                controlFileName = obj.optString("payload_name")
+                controlFileSize = obj.optLong("payload_size", 0L)
+                controlSymbolCount = obj.optInt("payload_symbol_count", 0)
+            }
+        } else {
+            controlFileName = obj.optString("payload_name")
+            controlFileSize = obj.optLong("payload_size", 0L)
+            controlSymbolCount = obj.optInt("payload_symbol_count", 0)
+        }
         controlMetaReady = controlFileName.isNotBlank() && controlFileSize > 0 && controlSymbolCount > 0
         runOnUiThread {
             statusText.text = "阶段：控制帧已接收，可开始数据扫码"
             controlInfoText.text = "控制帧信息：${controlFileName} | ${controlFileSize} 字节 | ${controlSymbolCount} 分片"
             finalizeButton.isEnabled = controlMetaReady
-        }
-    }
-
-    private fun processManifestFrame(obj: JSONObject) {
-            val kind = obj.optString("kind")
-            when (kind) {
-            "manifest_start" -> {
-                manifestChunks.clear()
-                manifestChunkTotal = obj.optInt("chunk_total", 0)
-                manifestSha256 = obj.optString("manifest_sha256")
-                controlFileName = obj.optString("payload_name")
-                controlFileSize = obj.optLong("payload_size", 0L)
-                controlSymbolCount = obj.optInt("payload_symbol_count", 0)
-                controlMetaReady = controlFileName.isNotBlank() && controlFileSize > 0 && controlSymbolCount > 0
-                runOnUiThread {
-                    statusText.text = "阶段：接收 manifest 控制帧"
-                    if (controlMetaReady) {
-                        controlInfoText.text = "控制帧信息：${controlFileName} | ${controlFileSize} 字节 | ${controlSymbolCount} 分片"
-                    }
-                }
-            }
-            "manifest_chunk" -> {
-                val idx = obj.optInt("chunk_index", -1)
-                val b64 = obj.optString("payload_b64")
-                if (idx >= 0 && b64.isNotBlank()) {
-                    try {
-                        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
-                        val crc = obj.optLong("payload_crc32", -1).toInt()
-                        if (crc32(bytes) == crc) {
-                            manifestChunks[idx] = bytes
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-            "manifest_end" -> {
-                if (manifestChunkTotal > 0 && manifestChunks.size == manifestChunkTotal) {
-                    val all = ByteArray(manifestChunks.values.sumOf { it.size })
-                    var off = 0
-                    for (i in 0 until manifestChunkTotal) {
-                        val part = manifestChunks[i] ?: return
-                        System.arraycopy(part, 0, all, off, part.size)
-                        off += part.size
-                    }
-                    val text = String(all, Charsets.UTF_8)
-                    val sha = sha256Hex(all)
-                    if (manifestSha256.isNullOrBlank() || manifestSha256 == sha) {
-                        manifestText = text
-                        runOnUiThread {
-                            statusText.text = "阶段：manifest 已就绪，可继续自动扫码"
-                            finalizeButton.isEnabled = true
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -280,28 +252,95 @@ class MainActivity : ComponentActivity() {
 
         statusText.text = "阶段：校验通过，开始上传"
         uploadedCount = 0
+        uploadConflictIds.clear()
+        val transferKey = "uploaded_${transferId ?: ""}"
+        val existingUploaded = prefs.getStringSet(transferKey, emptySet()) ?: emptySet()
+        uploadedSymbolIds.clear()
+        uploadedSymbolIds.addAll(existingUploaded)
+
         ioExecutor.execute {
-            val m = manifestText
-            if (!m.isNullOrBlank()) {
-                uploadManifestToWindows(windowsAddr, m)
+            val manifestPayload = buildManifestFromSymbols()
+            if (!uploadManifestToWindows(windowsAddr, manifestPayload)) {
+                runOnUiThread {
+                    statusText.text = "上传失败：manifest 上传失败"
+                }
+                return@execute
             }
-            val values = symbolMap.values.toList()
+
+            val values = synchronized(this) { symbolMap.values.toList() }
             for (obj in values) {
+                val sid = obj.optString("symbol_id")
+                if (sid.isBlank()) continue
+                if (uploadedSymbolIds.contains(sid)) continue
+
+                val payloadB64 = obj.optString("payload_b64")
+                val payloadCrc = obj.optInt("payload_crc32", -1)
+                if (payloadB64.isNotBlank() && payloadCrc >= 0) {
+                    try {
+                        val bytes = android.util.Base64.decode(payloadB64, android.util.Base64.DEFAULT)
+                        if (crc32(bytes) != payloadCrc) {
+                            uploadConflictIds.add(sid)
+                            continue
+                        }
+                    } catch (_: Exception) {
+                        uploadConflictIds.add(sid)
+                        continue
+                    }
+                }
+
                 val rec = JSONObject()
-                rec.put("symbol_id", obj.optString("stable_symbol_id"))
-                rec.put("data_b64", obj.optString("payload_b64"))
+                rec.put("symbol_id", sid)
+                rec.put("payload_b64", obj.optString("payload_b64"))
                 rec.put("file_id", obj.optInt("file_id", -1))
                 rec.put("block", obj.optInt("block_id", -1))
-                rec.put("symbol", obj.optInt("symbol_id", -1))
+                rec.put("symbol", obj.optInt("symbol_index", -1))
                 rec.put("redundant", obj.optBoolean("is_repair", false))
 
-                val ok = uploadToWindows(windowsAddr, rec.toString())
-                if (ok) uploadedCount += 1
+                var ok = false
+                var retry = 0
+                while (!ok && retry < 3) {
+                    ok = uploadToWindows(windowsAddr, rec.toString())
+                    retry += 1
+                }
+                if (ok) {
+                    uploadedCount += 1
+                    uploadedSymbolIds.add(sid)
+                    prefs.edit().putStringSet(transferKey, uploadedSymbolIds).apply()
+                }
             }
+
             runOnUiThread {
-                statusText.text = "阶段：上传完成，成功 $uploadedCount / ${symbolMap.size}"
+                statusText.text = "阶段：上传完成，成功 $uploadedCount / ${symbolMap.size}，冲突 ${uploadConflictIds.size}"
             }
         }
+    }
+
+    private fun buildManifestFromSymbols(): String {
+        val values = synchronized(this) { symbolMap.values.toList() }
+        val grouped = values.groupBy { it.optInt("file_id", -1) }
+        val filesArr = JSONArray()
+        for ((fileId, list) in grouped) {
+            if (fileId < 0) continue
+            val source = list.filter { !it.optBoolean("is_repair", false) }
+                .sortedWith(compareBy<JSONObject> { it.optInt("block_id", -1) }.thenBy { it.optInt("symbol_index", -1) })
+            if (source.isEmpty()) continue
+            val first = source.first()
+            val obj = JSONObject()
+            obj.put("path", first.optString("payload_file_name", "file_${fileId}.bin"))
+            obj.put("size", first.optLong("payload_file_size", 0L))
+            obj.put("sha256", first.optString("payload_file_sha256", ""))
+            obj.put("compression", first.optString("payload_compression", "none"))
+            val sidArr = JSONArray()
+            source.forEach { sidArr.put(it.optString("symbol_id")) }
+            obj.put("source_symbol_ids", sidArr)
+            filesArr.put(obj)
+        }
+        val manifest = JSONObject()
+        manifest.put("version", 1)
+        manifest.put("protocol", "easytransfer/1")
+        manifest.put("transfer_id", transferId ?: "")
+        manifest.put("files", filesArr)
+        return manifest.toString()
     }
 
     private fun uploadManifestToWindows(addr: String, payload: String): Boolean {
@@ -313,8 +352,8 @@ class MainActivity : ComponentActivity() {
             }
             val conn = (URL(endpoint).openConnection() as HttpURLConnection)
             conn.requestMethod = "POST"
-            conn.connectTimeout = 3000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 10000
+            conn.readTimeout = 30000
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             val bytes = payload.toByteArray(Charsets.UTF_8)
@@ -335,8 +374,8 @@ class MainActivity : ComponentActivity() {
             }
             val conn = (URL(endpoint).openConnection() as HttpURLConnection)
             conn.requestMethod = "POST"
-            conn.connectTimeout = 3000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 10000
+            conn.readTimeout = 30000
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             val bytes = payload.toByteArray(Charsets.UTF_8)
@@ -356,11 +395,11 @@ class MainActivity : ComponentActivity() {
             val uploaded = File(outDir, "validated_symbols.jsonl")
             val lines = symbolMap.values.map {
                 JSONObject().apply {
-                    put("symbol_id", it.optString("stable_symbol_id"))
-                    put("data_b64", it.optString("payload_b64"))
+                    put("symbol_id", it.optString("symbol_id"))
+                    put("payload_b64", it.optString("payload_b64"))
                     put("file_id", it.optInt("file_id", -1))
                     put("block", it.optInt("block_id", -1))
-                    put("symbol", it.optInt("symbol_id", -1))
+                    put("symbol", it.optInt("symbol_index", -1))
                     put("redundant", it.optBoolean("is_repair", false))
                 }.toString()
             }
@@ -377,10 +416,12 @@ class MainActivity : ComponentActivity() {
             report.put("scanned_symbols", symbolMap.size)
             report.put("missing_symbols", missingSymbolIds.size)
             report.put("uploaded_symbols", uploadedCount)
-            report.put("manifest_ready", !manifestText.isNullOrBlank())
+            report.put("manifest_ready", controlMetaReady)
             report.put("control_file_name", controlFileName)
             report.put("control_file_size", controlFileSize)
             report.put("control_symbol_count", controlSymbolCount)
+            report.put("upload_conflict_count", uploadConflictIds.size)
+            report.put("resume_uploaded_symbols", uploadedSymbolIds.size)
             File(outDir, "upload_report.json").writeText(report.toString(2))
 
             statusText.text = "已导出：${outDir.absolutePath}"
@@ -388,14 +429,6 @@ class MainActivity : ComponentActivity() {
             statusText.text = "导出失败：${e.message}"
         }
     }
-}
-
-private fun sha256Hex(bytes: ByteArray): String {
-    val md = java.security.MessageDigest.getInstance("SHA-256")
-    val out = md.digest(bytes)
-    val sb = StringBuilder(out.size * 2)
-    for (b in out) sb.append(String.format("%02x", b))
-    return sb.toString()
 }
 
 private fun crc32(bytes: ByteArray): Int {

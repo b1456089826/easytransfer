@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -33,13 +35,13 @@ struct Manifest {
 #[derive(Debug, Deserialize, Serialize)]
 struct ReceivedRec {
     symbol_id: String,
-    data_b64: String,
+    payload_b64: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct AndroidPayloadRec {
     symbol_id: Option<String>,
-    data_b64: Option<String>,
+    payload_b64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +50,7 @@ struct Report {
     files_written: Vec<String>,
     files_failed: Vec<String>,
     missing_source_symbols: Vec<String>,
+    duplicate_conflicts: usize,
     errors: Vec<String>,
 }
 
@@ -62,7 +65,6 @@ struct ServerReport {
 struct ReceiverServerState {
     running: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
-    manifest_path: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for ReceiverServerState {
@@ -70,7 +72,6 @@ impl Default for ReceiverServerState {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             worker: None,
-            manifest_path: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -116,7 +117,7 @@ fn decompress(codec: &str, data: &[u8]) -> Result<Vec<u8>, String> {
             d.read_to_end(&mut out).map_err(|e| e.to_string())?;
             Ok(out)
         }
-        _ => Ok(data.to_vec()),
+        _ => Err(format!("unknown compression codec: {}", codec)),
     }
 }
 
@@ -146,33 +147,14 @@ fn start_receiver_server(
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
-    let manifest_auto = if let Some(parent) = path.parent() {
-        parent.join("manifest.auto.json")
-    } else {
-        PathBuf::from("manifest.auto.json")
-    };
-    {
-        let mut mg = guard
-            .manifest_path
-            .lock()
-            .map_err(|_| "manifest路径锁失败".to_string())?;
-        *mg = Some(manifest_auto.to_string_lossy().to_string());
-    }
-
     let running = guard.running.clone();
-    let manifest_path_arc = guard.manifest_path.clone();
     running.store(true, Ordering::SeqCst);
 
     let worker = thread::spawn(move || {
         while running.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    let mp = manifest_path_arc
-                        .lock()
-                        .ok()
-                        .and_then(|x| x.clone())
-                        .unwrap_or_default();
-                    let _ = handle_windows_client(&mut stream, &path, Path::new(&mp));
+                    let _ = handle_windows_client(&mut stream, &path);
                 }
                 Err(err) => {
                     if err.kind() == std::io::ErrorKind::WouldBlock {
@@ -230,10 +212,13 @@ fn reconstruct(received_path: String, manifest_path: String, output_dir: String)
     } else {
         PathBuf::from(manifest_path)
     };
+    if !mpath.exists() {
+        return Err("manifest file not found".to_string());
+    }
     let manifest_str = fs::read_to_string(&mpath).map_err(|e| e.to_string())?;
     let manifest: Manifest = serde_json::from_str(&manifest_str).map_err(|e| e.to_string())?;
 
-    let symbol_map = load_symbol_map(&received_path)?;
+    let (symbol_map, duplicate_conflicts) = load_symbol_map(&received_path)?;
 
     let out_dir = PathBuf::from(output_dir);
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
@@ -243,6 +228,7 @@ fn reconstruct(received_path: String, manifest_path: String, output_dir: String)
         files_written: vec![],
         files_failed: vec![],
         missing_source_symbols: vec![],
+        duplicate_conflicts,
         errors: vec![],
     };
 
@@ -303,8 +289,9 @@ fn reconstruct(received_path: String, manifest_path: String, output_dir: String)
     Ok(report)
 }
 
-fn load_symbol_map(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
+fn load_symbol_map(path: &str) -> Result<(HashMap<String, Vec<u8>>, usize), String> {
     let mut symbol_map: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut duplicate_conflicts = 0usize;
     let received_text = fs::read_to_string(path).map_err(|e| e.to_string())?;
 
     let mut parsed_jsonl = false;
@@ -313,13 +300,21 @@ fn load_symbol_map(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
             continue;
         }
         if let Ok(rec) = serde_json::from_str::<ReceivedRec>(line) {
-            let bytes = B64.decode(rec.data_b64).map_err(|e| e.to_string())?;
+            if let Some(existing) = symbol_map.get(&rec.symbol_id) {
+                let current = B64.decode(rec.payload_b64.clone()).map_err(|e| e.to_string())?;
+                if existing != &current {
+                    duplicate_conflicts += 1;
+                    continue;
+                }
+                continue;
+            }
+            let bytes = B64.decode(rec.payload_b64).map_err(|e| e.to_string())?;
             symbol_map.insert(rec.symbol_id, bytes);
             parsed_jsonl = true;
         }
     }
     if parsed_jsonl {
-        return Ok(symbol_map);
+        return Ok((symbol_map, duplicate_conflicts));
     }
 
     for line in received_text.lines() {
@@ -327,46 +322,77 @@ fn load_symbol_map(path: &str) -> Result<HashMap<String, Vec<u8>>, String> {
             continue;
         }
         if let Ok(rec) = serde_json::from_str::<AndroidPayloadRec>(line) {
-            if let (Some(symbol_id), Some(data_b64)) = (rec.symbol_id, rec.data_b64) {
-                let bytes = B64.decode(data_b64).map_err(|e| e.to_string())?;
+            if let (Some(symbol_id), Some(payload_b64)) = (rec.symbol_id, rec.payload_b64) {
+                let bytes = B64.decode(payload_b64).map_err(|e| e.to_string())?;
+                if let Some(existing) = symbol_map.get(&symbol_id) {
+                    if existing != &bytes {
+                        duplicate_conflicts += 1;
+                        continue;
+                    }
+                    continue;
+                }
                 symbol_map.insert(symbol_id, bytes);
             }
         }
     }
 
-    Ok(symbol_map)
+    Ok((symbol_map, duplicate_conflicts))
 }
 
-fn handle_windows_client(stream: &mut TcpStream, received_path: &Path, manifest_auto_path: &Path) -> Result<(), String> {
-    let mut req = Vec::new();
-    stream
-        .read_to_end(&mut req)
-        .map_err(|e| format!("读取请求失败: {}", e))?;
-    let req_text = String::from_utf8_lossy(&req).to_string();
-    if req_text.starts_with("POST /upload-manifest") {
-        let parts: Vec<&str> = req_text.split("\r\n\r\n").collect();
-        if parts.len() < 2 {
-            write_http(stream, 400, "Bad Request", "{\"ok\":false,\"error\":\"body\"}")?;
-            return Ok(());
+fn handle_windows_client(stream: &mut TcpStream, received_path: &Path) -> Result<(), String> {
+    let cloned = stream.try_clone().map_err(|e| format!("连接克隆失败: {}", e))?;
+    let mut reader = BufReader::new(cloned);
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).map_err(|e| format!("读取请求行失败: {}", e))?;
+    let request_line = request_line.trim_end().to_string();
+    if request_line.is_empty() {
+        write_http(stream, 400, "Bad Request", "{\"ok\":false,\"error\":\"request_line\"}")?;
+        return Ok(());
+    }
+
+    let mut content_length: usize = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| format!("读取请求头失败: {}", e))?;
+        let line_trim = line.trim_end();
+        if line_trim.is_empty() {
+            break;
         }
-        fs::write(manifest_auto_path, parts[1]).map_err(|e| format!("写manifest失败: {}", e))?;
+        let lower = line_trim.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            content_length = v.trim().parse::<usize>().unwrap_or(0);
+        }
+    }
+
+    const MAX_BODY: usize = 2 * 1024 * 1024;
+    if content_length == 0 || content_length > MAX_BODY {
+        write_http(stream, 400, "Bad Request", "{\"ok\":false,\"error\":\"content_length\"}")?;
+        return Ok(());
+    }
+
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body).map_err(|e| format!("读取请求体失败: {}", e))?;
+    let body_text = String::from_utf8(body).map_err(|e| format!("请求体UTF8失败: {}", e))?;
+
+    if request_line.starts_with("POST /upload-manifest") {
+        let manifest_path = if let Some(parent) = received_path.parent() {
+            parent.join("manifest.auto.json")
+        } else {
+            PathBuf::from("manifest.auto.json")
+        };
+        fs::write(manifest_path, body_text).map_err(|e| format!("写manifest失败: {}", e))?;
         write_http(stream, 200, "OK", "{\"ok\":true,\"saved\":\"manifest\"}")?;
         let _ = stream.shutdown(Shutdown::Both);
         return Ok(());
     }
 
-    if !req_text.starts_with("POST /upload-symbol") {
+    if !request_line.starts_with("POST /upload-symbol") {
         write_http(stream, 404, "Not Found", "{\"ok\":false,\"error\":\"path\"}")?;
         return Ok(());
     }
-    let parts: Vec<&str> = req_text.split("\r\n\r\n").collect();
-    if parts.len() < 2 {
-        write_http(stream, 400, "Bad Request", "{\"ok\":false,\"error\":\"body\"}")?;
-        return Ok(());
-    }
-    let body = parts[1];
-    let rec: ReceivedRec = serde_json::from_str(body).map_err(|e| format!("解析JSON失败: {}", e))?;
-    let _ = B64.decode(rec.data_b64.clone()).map_err(|e| format!("base64失败: {}", e))?;
+
+    let rec: ReceivedRec = serde_json::from_str(&body_text).map_err(|e| format!("解析JSON失败: {}", e))?;
+    let _ = B64.decode(rec.payload_b64.clone()).map_err(|e| format!("base64失败: {}", e))?;
     let line = serde_json::to_string(&rec).map_err(|e| format!("序列化失败: {}", e))?;
     let mut file = fs::OpenOptions::new()
         .create(true)

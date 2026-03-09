@@ -3,6 +3,9 @@ name: windows-tauri-build
 on:
   push:
     branches: ["main"]
+    paths:
+      - "apps/windows-receiver-tauri/**"
+      - ".github/workflows/windows-tauri-build.yml"
   workflow_dispatch:
 
 permissions:
